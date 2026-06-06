@@ -134,13 +134,29 @@ class FKHeader:
 
     def validate_basic(self) -> None:
         if self.magic != MAGIC:
-            raise FKError(f"bad magic: expected {MAGIC!r}, got {self.magic!r}")
+            raise FKError(
+                f"bad magic: expected {MAGIC!r}, got {self.magic!r}\n"
+                "\n"
+                "This file does not appear to be a valid FK archive."
+            )
         if self.header_size != HEADER_SIZE:
-            raise FKError(f"unsupported header size: {self.header_size}")
+            raise FKError(
+                f"unsupported header size: {self.header_size}\n"
+                "\n"
+                f"This tool only supports header size {HEADER_SIZE}."
+            )
         if self.version > VERSION:
-            raise FKError(f"unsupported FK version: {self.version} (max supported: {VERSION})")
+            raise FKError(
+                f"unsupported FK version: {self.version} (max supported: {VERSION})\n"
+                "\n"
+                "The archive was created with a newer version of this tool."
+            )
         if self.algorithm not in ALGORITHM_NAMES:
-            raise FKError(f"unsupported algorithm id: {self.algorithm}")
+            raise FKError(
+                f"unsupported algorithm id: {self.algorithm}\n"
+                "\n"
+                f"Supported algorithms: {', '.join(ALGORITHM_NAMES.values())}"
+            )
         if self.reserved != 0:
             raise FKError("reserved field must be 0")
         if self.reserved2 != b"\x00" * 16:
@@ -312,7 +328,12 @@ def _derive_key(password: str, salt: bytes) -> bytes:
 
 def _encrypt_aes_gcm(plaintext: bytes, password: str) -> bytes:
     if not HAS_CRYPTOGRAPHY:
-        raise FKError("encryption requires 'cryptography' package: pip install cryptography")
+        raise FKError(
+            "encryption requires 'cryptography' package\n"
+            "\n"
+            "Install it with:\n"
+            "  pip install cryptography"
+        )
     salt = os.urandom(16)
     nonce = os.urandom(12)
     key = _derive_key(password, salt)
@@ -323,7 +344,12 @@ def _encrypt_aes_gcm(plaintext: bytes, password: str) -> bytes:
 
 def _decrypt_aes_gcm(ciphertext: bytes, password: str) -> bytes:
     if not HAS_CRYPTOGRAPHY:
-        raise FKError("encryption requires 'cryptography' package: pip install cryptography")
+        raise FKError(
+            "encryption requires 'cryptography' package\n"
+            "\n"
+            "Install it with:\n"
+            "  pip install cryptography"
+        )
     if len(ciphertext) < 28:
         raise FKError("encrypted payload too short")
     salt = ciphertext[:16]
@@ -334,7 +360,14 @@ def _decrypt_aes_gcm(ciphertext: bytes, password: str) -> bytes:
     try:
         return aesgcm.decrypt(nonce, encrypted, None)
     except Exception as exc:
-        raise FKError(f"decryption failed (bad password or corrupted data): {exc}") from exc
+        raise FKError(
+            f"decryption failed: {exc}\n"
+            "\n"
+            "Possible causes:\n"
+            "  - Wrong password\n"
+            "  - Corrupted archive data\n"
+            "  - Archive was tampered with"
+        ) from exc
 
 
 def make_tar_stream(paths: list[Path]) -> bytes:
@@ -345,7 +378,11 @@ def make_tar_stream(paths: list[Path]) -> bytes:
         for path in paths:
             path = path.resolve()
             if not path.exists():
-                raise FKError(f"input path does not exist: {path}")
+                raise FKError(
+                    f"input path does not exist: {path}\n"
+                    "\n"
+                    "Make sure the path is correct and accessible."
+                )
 
             # Store each root path by its basename, not as an absolute path.
             arcname = path.name
@@ -357,7 +394,16 @@ def make_tar_stream(paths: list[Path]) -> bytes:
 def _encode_payload(tar_data: bytes, algorithm: int, password: str | None = None) -> bytes:
     if algorithm == ALGORITHM_ENCRYPTED_DUP2:
         if password is None:
-            raise FKError("encrypted algorithm requires a password")
+            raise FKError(
+                "encrypted algorithm requires a password\n"
+                "\n"
+                "Provide one with:\n"
+                "  --password <password>\n"
+                "  --password-file <file>\n"
+                "\n"
+                "Example:\n"
+                "  python fk_archive.py pack --algorithm encrypted --password secret input.txt output.tar.fk"
+            )
         encrypted = _encrypt_aes_gcm(tar_data, password)
         b64 = base64.b64encode(encrypted)
         return dup_encode(b64, 2)
@@ -382,7 +428,16 @@ def _decode_payload(payload: bytes, algorithm: int, password: str | None = None)
         b64 = dup_decode(payload, 2)
         encrypted = base64.b64decode(b64, validate=True)
         if password is None:
-            raise FKError("encrypted archive requires --password")
+            raise FKError(
+                "encrypted archive requires a password to unpack\n"
+                "\n"
+                "Provide one with:\n"
+                "  --password <password>\n"
+                "  --password-file <file>\n"
+                "\n"
+                "Example:\n"
+                "  python fk_archive.py unpack --password secret archive.tar.fk extracted/"
+            )
         return _decrypt_aes_gcm(encrypted, password)
     elif algorithm == ALGORITHM_BASE64_DUP3:
         b64 = dup_decode(payload, 3)
@@ -422,33 +477,45 @@ def fk_encode_tar_bytes(tar_data: bytes, algorithm: int = ALGORITHM_BASE64_DUP2,
 
 def fk_decode_to_tar_bytes(fk_data: bytes, password: str | None = None) -> tuple[FKHeader, bytes]:
     if len(fk_data) < HEADER_SIZE:
-        raise FKError("file is too small to be a FK archive")
+        raise FKError(
+            "file is too small to be a FK archive\n"
+            "\n"
+            "A valid .tar.fk file must be at least 64 bytes (header size)."
+        )
 
     header = FKHeader.unpack(fk_data[:HEADER_SIZE])
     payload = fk_data[HEADER_SIZE:]
 
     if len(payload) != header.payload_size:
         raise FKError(
-            f"payload size mismatch: header says {header.payload_size}, actual {len(payload)}"
+            f"payload size mismatch: header says {header.payload_size}, actual {len(payload)}\n"
+            "\n"
+            "The archive may be truncated or corrupted."
         )
 
     actual_payload_crc = crc32_u32(payload)
     if actual_payload_crc != header.crc32_payload:
         raise FKError(
-            f"payload CRC32 mismatch: header {header.crc32_payload:08x}, actual {actual_payload_crc:08x}"
+            f"payload CRC32 mismatch: header {header.crc32_payload:08x}, actual {actual_payload_crc:08x}\n"
+            "\n"
+            "The archive data may be corrupted or tampered with."
         )
 
     tar_data = _decode_payload(payload, header.algorithm, password)
 
     if len(tar_data) != header.original_size:
         raise FKError(
-            f"original tar size mismatch: header says {header.original_size}, actual {len(tar_data)}"
+            f"original tar size mismatch: header says {header.original_size}, actual {len(tar_data)}\n"
+            "\n"
+            "The archive may be corrupted or the wrong algorithm was used."
         )
 
     actual_original_crc = crc32_u32(tar_data)
     if actual_original_crc != header.crc32_original:
         raise FKError(
-            f"original CRC32 mismatch: header {header.crc32_original:08x}, actual {actual_original_crc:08x}"
+            f"original CRC32 mismatch: header {header.crc32_original:08x}, actual {actual_original_crc:08x}\n"
+            "\n"
+            "The archive data may be corrupted or tampered with."
         )
 
     return header, tar_data
@@ -473,17 +540,33 @@ def safe_extract_tar(tar_data: bytes, dest_dir: Path) -> None:
 
         for member in members:
             if member.name.startswith("/") or member.name.startswith("\\"):
-                raise FKError(f"unsafe absolute path in tar: {member.name!r}")
+                raise FKError(
+                    f"unsafe absolute path in tar: {member.name!r}\n"
+                    "\n"
+                    "The archive contains an absolute path which could overwrite system files."
+                )
             if not is_safe_tar_member(dest_dir, member.name):
-                raise FKError(f"unsafe path traversal in tar: {member.name!r}")
+                raise FKError(
+                    f"unsafe path traversal in tar: {member.name!r}\n"
+                    "\n"
+                    "The archive contains a path that escapes the extraction directory."
+                )
 
             # Avoid extracting special device files. They are rarely wanted and can be dangerous.
             if member.isdev():
-                raise FKError(f"refusing to extract device file: {member.name!r}")
+                raise FKError(
+                    f"refusing to extract device file: {member.name!r}\n"
+                    "\n"
+                    "Device files are not supported for security reasons."
+                )
 
             # Avoid extracting symlinks/hardlinks to prevent path traversal and overwrites.
             if member.issym() or member.islnk():
-                raise FKError(f"refusing to extract link: {member.name!r}")
+                raise FKError(
+                    f"refusing to extract link: {member.name!r}\n"
+                    "\n"
+                    "Symlinks and hardlinks are not supported for security reasons."
+                )
 
         tf.extractall(dest_dir, members=members)
 
@@ -518,7 +601,9 @@ def pack_command(args: argparse.Namespace) -> int:
 
     if output_path.suffixes[-2:] != [".tar", ".fk"]:
         print(
-            f"warning: output path does not end with .tar.fk: {output_path}",
+            f"warning: output path does not end with .tar.fk: {output_path}\n"
+            "\n"
+            "Tip: Use a .tar.fk extension so other tools can recognize the file.",
             file=sys.stderr,
         )
 
@@ -556,10 +641,21 @@ def unpack_command(args: argparse.Namespace) -> int:
 
 def info_command(args: argparse.Namespace) -> int:
     input_path = Path(args.input)
+    if not input_path.exists():
+        raise FKError(
+            f"file not found: {input_path}\n"
+            "\n"
+            "Make sure the path is correct and the file exists."
+        )
+
     fk_data = input_path.read_bytes()
 
     if len(fk_data) < HEADER_SIZE:
-        raise FKError("file is too small to be a FK archive")
+        raise FKError(
+            "file is too small to be a FK archive\n"
+            "\n"
+            "A valid .tar.fk file must be at least 64 bytes (header size)."
+        )
 
     header = FKHeader.unpack(fk_data[:HEADER_SIZE])
     payload_actual_size = max(0, len(fk_data) - HEADER_SIZE)
@@ -651,7 +747,16 @@ def normalize_pack_args(args: argparse.Namespace) -> None:
     if args.command != "pack":
         return
     if len(args.paths) < 2:
-        raise FKError("pack requires at least one input path and one output path")
+        raise FKError(
+            "pack requires at least one input path and one output path\n"
+            "\n"
+            "Usage:\n"
+            "  python fk_archive.py pack <input_path> <output.tar.fk>\n"
+            "  python fk_archive.py pack <file1> <dir2> <file3> <output.tar.fk>\n"
+            "\n"
+            "Example:\n"
+            "  python fk_archive.py pack ./myfile.txt ./myfile.tar.fk"
+        )
 
     args.inputs = args.paths[:-1]
     args.output = args.paths[-1]
