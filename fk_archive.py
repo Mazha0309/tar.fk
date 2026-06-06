@@ -243,6 +243,10 @@ def safe_extract_tar(tar_data: bytes, dest_dir: Path) -> None:
             if member.isdev():
                 raise FKError(f"refusing to extract device file: {member.name!r}")
 
+            # Avoid extracting symlinks/hardlinks to prevent path traversal and overwrites.
+            if member.issym() or member.islnk():
+                raise FKError(f"refusing to extract link: {member.name!r}")
+
         tf.extractall(dest_dir, members=members)
 
 
@@ -253,17 +257,23 @@ def pack_command(args: argparse.Namespace) -> int:
     tar_data = make_tar_stream(input_paths)
     fk_data = fk_encode_tar_bytes(tar_data)
 
+    if output_path.suffixes[-2:] != [".tar", ".fk"]:
+        print(
+            f"warning: output path does not end with .tar.fk: {output_path}",
+            file=sys.stderr,
+        )
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(fk_data)
 
     ratio = len(fk_data) / len(tar_data) if tar_data else float("inf")
-    compression_rate = 1 - ratio
+    expansion_rate = ratio - 1
 
     print(f"created: {output_path}")
     print(f"tar size: {len(tar_data)} bytes")
     print(f"fk size:  {len(fk_data)} bytes")
     print(f"bloat ratio: {ratio:.6f}x")
-    print(f"compression rate: {compression_rate * 100:.2f}%")
+    print(f"expansion rate: {expansion_rate * 100:.2f}%")
     return 0
 
 
@@ -310,11 +320,11 @@ def info_command(args: argparse.Namespace) -> int:
 
     total_ratio = len(fk_data) / header.original_size if header.original_size else float("inf")
     payload_ratio = header.payload_size / header.original_size if header.original_size else float("inf")
-    compression_rate = 1 - total_ratio
+    expansion_rate = total_ratio - 1
 
     print(f"payload bloat:    {payload_ratio:.6f}x")
     print(f"total bloat:      {total_ratio:.6f}x")
-    print(f"compression rate: {compression_rate * 100:.2f}%")
+    print(f"expansion rate: {expansion_rate * 100:.2f}%")
     return 0
 
 
@@ -331,7 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         help="input path(s), followed by output .tar.fk path",
     )
-    p_pack.set_defaults(func=None)
+    p_pack.set_defaults(func=pack_command)
 
     p_unpack = sub.add_parser("unpack", help="unpack a .tar.fk archive")
     p_unpack.add_argument("input", help="input .tar.fk file")
@@ -356,7 +366,6 @@ def normalize_pack_args(args: argparse.Namespace) -> None:
 
     args.inputs = args.paths[:-1]
     args.output = args.paths[-1]
-    args.func = pack_command
 
 
 def main(argv: list[str] | None = None) -> int:
