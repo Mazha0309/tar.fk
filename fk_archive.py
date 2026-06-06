@@ -69,13 +69,15 @@ MAGIC = b"FKAR\r\n\x1A\n"
 HEADER_SIZE = 64
 VERSION = 2
 
+# Flags
+FLAG_ENCRYPTED = 1 << 0
+
 # Algorithms
 ALGORITHM_BASE64_DUP2 = 1
 ALGORITHM_BASE64_DUP3 = 2
-ALGORITHM_ENCRYPTED_DUP2 = 3
-ALGORITHM_BITEXPAND = 4
-ALGORITHM_NESTED = 5
-ALGORITHM_RS_REDUNDANT = 6
+ALGORITHM_BITEXPAND = 3
+ALGORITHM_NESTED = 4
+ALGORITHM_RS_REDUNDANT = 5
 
 # magic[8], header_size[u16], version[u16], flags[u32], algorithm[u32], reserved[u32],
 # original_size[u64], payload_size[u64], crc32_original[u32], crc32_payload[u32], reserved2[16]
@@ -84,7 +86,6 @@ HEADER_STRUCT = struct.Struct("<8sHHIIIQQII16s")
 ALGORITHM_NAMES = {
     ALGORITHM_BASE64_DUP2: "base64 + dup2",
     ALGORITHM_BASE64_DUP3: "base64 + dup3",
-    ALGORITHM_ENCRYPTED_DUP2: "encrypted + base64 + dup2",
     ALGORITHM_BITEXPAND: "bit-expand + base64",
     ALGORITHM_NESTED: "base64 + hex + dup3 + base64",
     ALGORITHM_RS_REDUNDANT: "reed-solomon redundancy",
@@ -391,23 +392,8 @@ def make_tar_stream(paths: list[Path]) -> bytes:
     return buf.getvalue()
 
 
-def _encode_payload(tar_data: bytes, algorithm: int, password: str | None = None) -> bytes:
-    if algorithm == ALGORITHM_ENCRYPTED_DUP2:
-        if password is None:
-            raise FKError(
-                "encrypted algorithm requires a password\n"
-                "\n"
-                "Provide one with:\n"
-                "  --password <password>\n"
-                "  --password-file <file>\n"
-                "\n"
-                "Example:\n"
-                "  python fk_archive.py pack --algorithm encrypted --password secret input.txt output.tar.fk"
-            )
-        encrypted = _encrypt_aes_gcm(tar_data, password)
-        b64 = base64.b64encode(encrypted)
-        return dup_encode(b64, 2)
-    elif algorithm == ALGORITHM_BASE64_DUP3:
+def _encode_payload(tar_data: bytes, algorithm: int) -> bytes:
+    if algorithm == ALGORITHM_BASE64_DUP3:
         b64 = base64.b64encode(tar_data)
         return dup_encode(b64, 3)
     elif algorithm == ALGORITHM_BASE64_DUP2:
@@ -423,23 +409,8 @@ def _encode_payload(tar_data: bytes, algorithm: int, password: str | None = None
         raise FKError(f"unsupported algorithm id: {algorithm}")
 
 
-def _decode_payload(payload: bytes, algorithm: int, password: str | None = None) -> bytes:
-    if algorithm == ALGORITHM_ENCRYPTED_DUP2:
-        b64 = dup_decode(payload, 2)
-        encrypted = base64.b64decode(b64, validate=True)
-        if password is None:
-            raise FKError(
-                "encrypted archive requires a password to unpack\n"
-                "\n"
-                "Provide one with:\n"
-                "  --password <password>\n"
-                "  --password-file <file>\n"
-                "\n"
-                "Example:\n"
-                "  python fk_archive.py unpack --password secret archive.tar.fk extracted/"
-            )
-        return _decrypt_aes_gcm(encrypted, password)
-    elif algorithm == ALGORITHM_BASE64_DUP3:
+def _decode_payload(payload: bytes, algorithm: int) -> bytes:
+    if algorithm == ALGORITHM_BASE64_DUP3:
         b64 = dup_decode(payload, 3)
         return base64.b64decode(b64, validate=True)
     elif algorithm == ALGORITHM_BASE64_DUP2:
@@ -455,14 +426,23 @@ def _decode_payload(payload: bytes, algorithm: int, password: str | None = None)
         raise FKError(f"unsupported algorithm id: {algorithm}")
 
 
-def fk_encode_tar_bytes(tar_data: bytes, algorithm: int = ALGORITHM_BASE64_DUP2, password: str | None = None) -> bytes:
-    payload = _encode_payload(tar_data, algorithm, password)
+def fk_encode_tar_bytes(
+    tar_data: bytes,
+    algorithm: int = ALGORITHM_BASE64_DUP2,
+    password: str | None = None,
+) -> bytes:
+    payload = _encode_payload(tar_data, algorithm)
+
+    flags = 0
+    if password is not None:
+        payload = _encrypt_aes_gcm(payload, password)
+        flags |= FLAG_ENCRYPTED
 
     header = FKHeader(
         magic=MAGIC,
         header_size=HEADER_SIZE,
         version=VERSION,
-        flags=0,
+        flags=flags,
         algorithm=algorithm,
         reserved=0,
         original_size=len(tar_data),
@@ -475,7 +455,9 @@ def fk_encode_tar_bytes(tar_data: bytes, algorithm: int = ALGORITHM_BASE64_DUP2,
     return header.pack() + payload
 
 
-def fk_decode_to_tar_bytes(fk_data: bytes, password: str | None = None) -> tuple[FKHeader, bytes]:
+def fk_decode_to_tar_bytes(
+    fk_data: bytes, password: str | None = None
+) -> tuple[FKHeader, bytes]:
     if len(fk_data) < HEADER_SIZE:
         raise FKError(
             "file is too small to be a FK archive\n"
@@ -501,7 +483,21 @@ def fk_decode_to_tar_bytes(fk_data: bytes, password: str | None = None) -> tuple
             "The archive data may be corrupted or tampered with."
         )
 
-    tar_data = _decode_payload(payload, header.algorithm, password)
+    if header.flags & FLAG_ENCRYPTED:
+        if password is None:
+            raise FKError(
+                "archive is encrypted and requires a password to unpack\n"
+                "\n"
+                "Provide one with:\n"
+                "  --password <password>\n"
+                "  --password-file <file>\n"
+                "\n"
+                "Example:\n"
+                "  python fk_archive.py unpack --password secret archive.tar.fk extracted/"
+            )
+        payload = _decrypt_aes_gcm(payload, password)
+
+    tar_data = _decode_payload(payload, header.algorithm)
 
     if len(tar_data) != header.original_size:
         raise FKError(
@@ -576,9 +572,24 @@ def _get_password(args: argparse.Namespace, prompt: str) -> str | None:
         return args.password
     if args.password_file:
         return Path(args.password_file).read_text().strip()
-    if getattr(args, "algorithm", None) == "encrypted":
-        return getpass.getpass(prompt)
     return None
+
+
+def _require_password_for_encryption(args: argparse.Namespace) -> str | None:
+    """Get password and validate that one is provided when encryption is requested."""
+    password = _get_password(args, "Enter encryption password: ")
+    if getattr(args, "encrypt", False) and password is None:
+        raise FKError(
+            "--encrypt requires a password\n"
+            "\n"
+            "Provide one with:\n"
+            "  --password <password>\n"
+            "  --password-file <file>\n"
+            "\n"
+            "Example:\n"
+            "  python fk_archive.py pack --encrypt --password secret input.txt output.tar.fk"
+        )
+    return password
 
 
 def pack_command(args: argparse.Namespace) -> int:
@@ -588,13 +599,12 @@ def pack_command(args: argparse.Namespace) -> int:
     algorithm_map = {
         "dup2": ALGORITHM_BASE64_DUP2,
         "dup3": ALGORITHM_BASE64_DUP3,
-        "encrypted": ALGORITHM_ENCRYPTED_DUP2,
         "bitexpand": ALGORITHM_BITEXPAND,
         "nested": ALGORITHM_NESTED,
         "rs": ALGORITHM_RS_REDUNDANT,
     }
     algorithm = algorithm_map.get(args.algorithm, ALGORITHM_BASE64_DUP2)
-    password = _get_password(args, "Enter encryption password: ")
+    password = _require_password_for_encryption(args)
 
     tar_data = make_tar_stream(input_paths)
     fk_data = fk_encode_tar_bytes(tar_data, algorithm=algorithm, password=password)
@@ -618,6 +628,8 @@ def pack_command(args: argparse.Namespace) -> int:
     print(f"fk size:  {len(fk_data)} bytes")
     print(f"compression ratio: {compression_ratio:.4f}%")
     print(f"algorithm: {ALGORITHM_NAMES[algorithm]}")
+    if password:
+        print("encryption: AES-256-GCM")
     return 0
 
 
@@ -635,6 +647,8 @@ def unpack_command(args: argparse.Namespace) -> int:
     print(f"original tar size: {header.original_size} bytes")
     print(f"payload size:      {header.payload_size} bytes")
     print(f"algorithm:         {ALGORITHM_NAMES[header.algorithm]}")
+    if header.flags & FLAG_ENCRYPTED:
+        print("encryption:        AES-256-GCM")
     return 0
 
 
@@ -671,6 +685,8 @@ def info_command(args: argparse.Namespace) -> int:
     print(f"actual payload:   {payload_actual_size} bytes")
     print(f"crc32 original:   {header.crc32_original:08x}")
     print(f"crc32 payload:    {header.crc32_payload:08x}")
+    if header.flags & FLAG_ENCRYPTED:
+        print("encryption:       AES-256-GCM")
 
     if header.payload_size != payload_actual_size:
         print("warning: payload size mismatch")
@@ -701,14 +717,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_pack.add_argument(
         "--algorithm",
-        choices=["dup2", "dup3", "encrypted", "bitexpand", "nested", "rs"],
+        choices=["dup2", "dup3", "bitexpand", "nested", "rs"],
         default="nested",
         help="encoding algorithm (default: nested)",
     )
     p_pack.add_argument(
+        "--encrypt",
+        action="store_true",
+        help="encrypt the archive with AES-256-GCM",
+    )
+    p_pack.add_argument(
         "--password",
         default=None,
-        help="encryption password (for encrypted algorithm)",
+        help="encryption password",
     )
     p_pack.add_argument(
         "--password-file",
@@ -723,7 +744,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_unpack.add_argument(
         "--password",
         default=None,
-        help="decryption password (for encrypted archives)",
+        help="decryption password",
     )
     p_unpack.add_argument(
         "--password-file",

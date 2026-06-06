@@ -29,7 +29,7 @@ A deliberately silly, lossless **anti-compression** archive format. It takes you
 - **Lossless** — every bit is preserved
 - **Anti-compression** — files get significantly larger
 - **Multiple algorithms** — choose your level of bloat
-- **Encryption** — AES-256-GCM password protection
+- **Encryption** — AES-256-GCM password protection (can be combined with any algorithm)
 - **Safe extraction** — path traversal and symlink protection
 - **Versioned format** — backward compatible with v1 archives
 
@@ -39,17 +39,16 @@ A deliberately silly, lossless **anti-compression** archive format. It takes you
 |-----------|-----|-----------|-------------|
 | `dup2` | 1 | ~167% | base64 + duplicate every byte 2x |
 | `dup3` | 2 | ~300% | base64 + duplicate every byte 3x |
-| `encrypted` | 3 | ~168% | AES-256-GCM + base64 + dup2 |
-| `bitexpand` | 4 | ~967% | expand each byte to 8 ASCII bits + base64 |
-| `nested` | 5 | ~967% | base64 → hex → dup3 → base64 (default) |
-| `rs` | 6 | ~100% | Reed-Solomon redundancy codes |
+| `bitexpand` | 3 | ~967% | expand each byte to 8 ASCII bits + base64 |
+| `nested` | 4 | ~967% | base64 → hex → dup3 → base64 (default) |
+| `rs` | 5 | ~100% | Reed-Solomon redundancy codes |
 
 ### Installation
 
 Requires Python 3.9+.
 
 ```bash
-# Optional: for encrypted algorithm support
+# Optional: for encryption support
 pip install cryptography
 ```
 
@@ -68,8 +67,9 @@ python fk_archive.py pack file1 dir2 file3 output.tar.fk
 python fk_archive.py pack --algorithm dup3 input.txt output.tar.fk
 python fk_archive.py pack --algorithm bitexpand input.txt output.tar.fk
 
-# Encrypted
-python fk_archive.py pack --algorithm encrypted --password secret input.txt output.tar.fk
+# Encrypt (can be combined with any algorithm)
+python fk_archive.py pack --encrypt --password secret input.txt output.tar.fk
+python fk_archive.py pack --algorithm dup3 --encrypt --password secret input.txt output.tar.fk
 ```
 
 #### Unpack
@@ -100,7 +100,7 @@ python fk_archive.py info output.tar.fk
 | magic | 8 | `FKAR\r\n\x1A\n` |
 | header_size | 2 | 64 |
 | version | 2 | format version (1 or 2) |
-| flags | 4 | reserved |
+| flags | 4 | bit 0 = encrypted |
 | algorithm | 4 | algorithm ID |
 | reserved | 4 | must be 0 |
 | original_size | 8 | original tar size |
@@ -144,7 +144,7 @@ FK = FK's Kompressor
 - **无损** — 每一位数据都完整保留
 - **反压缩** — 文件会显著变大
 - **多种算法** — 选择你想要的膨胀程度
-- **加密** — AES-256-GCM 密码保护
+- **加密** — AES-256-GCM 密码保护（可与任何算法组合使用）
 - **安全解压** — 防止路径遍历和符号链接攻击
 - **版本化格式** — 向后兼容 v1 归档
 
@@ -154,17 +154,16 @@ FK = FK's Kompressor
 |-----------|-----|-----------|-------------|
 | `dup2` | 1 | ~167% | base64 + 每个字节复制 2 次 |
 | `dup3` | 2 | ~300% | base64 + 每个字节复制 3 次 |
-| `encrypted` | 3 | ~168% | AES-256-GCM + base64 + dup2 |
-| `bitexpand` | 4 | ~967% | 每个字节展开为 8 个 ASCII 位 + base64 |
-| `nested` | 5 | ~967% | base64 → hex → dup3 → base64（默认） |
-| `rs` | 6 | ~100% | Reed-Solomon 冗余纠错码 |
+| `bitexpand` | 3 | ~967% | 每个字节展开为 8 个 ASCII 位 + base64 |
+| `nested` | 4 | ~967% | base64 → hex → dup3 → base64（默认） |
+| `rs` | 5 | ~100% | Reed-Solomon 冗余纠错码 |
 
 ### 安装
 
 需要 Python 3.9+。
 
 ```bash
-# 可选：如需使用加密算法
+# 可选：如需使用加密功能
 pip install cryptography
 ```
 
@@ -183,8 +182,9 @@ python fk_archive.py pack file1 dir2 file3 output.tar.fk
 python fk_archive.py pack --algorithm dup3 input.txt output.tar.fk
 python fk_archive.py pack --algorithm bitexpand input.txt output.tar.fk
 
-# 加密
-python fk_archive.py pack --algorithm encrypted --password secret input.txt output.tar.fk
+# 加密（可与任何算法组合）
+python fk_archive.py pack --encrypt --password secret input.txt output.tar.fk
+python fk_archive.py pack --algorithm dup3 --encrypt --password secret input.txt output.tar.fk
 ```
 
 #### 解压
@@ -215,7 +215,7 @@ python fk_archive.py info output.tar.fk
 | magic | 8 | `FKAR\r\n\x1A\n` |
 | header_size | 2 | 64 |
 | version | 2 | 格式版本（1 或 2） |
-| flags | 4 | 保留 |
+| flags | 4 | bit 0 = 加密 |
 | algorithm | 4 | 算法 ID |
 | reserved | 4 | 必须为 0 |
 | original_size | 8 | 原始 tar 大小 |
