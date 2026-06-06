@@ -434,7 +434,7 @@ def fk_encode_tar_bytes(
     payload = _encode_payload(tar_data, algorithm)
 
     flags = 0
-    if password is not None:
+    if password:
         payload = _encrypt_aes_gcm(payload, password)
         flags |= FLAG_ENCRYPTED
 
@@ -568,7 +568,7 @@ def safe_extract_tar(tar_data: bytes, dest_dir: Path) -> None:
 
 
 def _get_password(args: argparse.Namespace, prompt: str) -> str | None:
-    if args.password:
+    if args.password is not None:
         return args.password
     if args.password_file:
         return Path(args.password_file).read_text().strip()
@@ -578,17 +578,20 @@ def _get_password(args: argparse.Namespace, prompt: str) -> str | None:
 def _require_password_for_encryption(args: argparse.Namespace) -> str | None:
     """Get password and validate that one is provided when encryption is requested."""
     password = _get_password(args, "Enter encryption password: ")
-    if getattr(args, "encrypt", False) and password is None:
-        raise FKError(
-            "--encrypt requires a password\n"
-            "\n"
-            "Provide one with:\n"
-            "  --password <password>\n"
-            "  --password-file <file>\n"
-            "\n"
-            "Example:\n"
-            "  python fk_archive.py pack --encrypt --password secret input.txt output.tar.fk"
-        )
+    if getattr(args, "encrypt", False):
+        if password is None:
+            password = getpass.getpass("Enter encryption password: ")
+        if not password:
+            raise FKError(
+                "--encrypt requires a non-empty password\n"
+                "\n"
+                "Provide one with:\n"
+                "  --password <password>\n"
+                "  --password-file <file>\n"
+                "\n"
+                "Example:\n"
+                "  python fk_archive.py pack --encrypt --password secret input.txt output.tar.fk"
+            )
     return password
 
 
