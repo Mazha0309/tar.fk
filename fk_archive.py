@@ -611,13 +611,12 @@ def pack_command(args: argparse.Namespace) -> int:
     output_path.write_bytes(fk_data)
 
     ratio = len(fk_data) / len(tar_data) if tar_data else float("inf")
-    expansion_rate = ratio - 1
+    compression_ratio = (1 - 1 / ratio) * 100 if ratio != float("inf") else float("inf")
 
     print(f"created: {output_path}")
     print(f"tar size: {len(tar_data)} bytes")
     print(f"fk size:  {len(fk_data)} bytes")
-    print(f"bloat ratio: {ratio:.6f}x")
-    print(f"expansion rate: {expansion_rate * 100:.2f}%")
+    print(f"compression ratio: {compression_ratio:.2f}%")
     print(f"algorithm: {ALGORITHM_NAMES[algorithm]}")
     return 0
 
@@ -679,11 +678,11 @@ def info_command(args: argparse.Namespace) -> int:
 
     total_ratio = len(fk_data) / header.original_size if header.original_size else float("inf")
     payload_ratio = header.payload_size / header.original_size if header.original_size else float("inf")
-    expansion_rate = total_ratio - 1
+    payload_compression = (1 - 1 / payload_ratio) * 100 if payload_ratio != float("inf") else float("inf")
+    total_compression = (1 - 1 / total_ratio) * 100 if total_ratio != float("inf") else float("inf")
 
-    print(f"payload bloat:    {payload_ratio:.6f}x")
-    print(f"total bloat:      {total_ratio:.6f}x")
-    print(f"expansion rate: {expansion_rate * 100:.2f}%")
+    print(f"payload compression ratio: {payload_compression:.2f}%")
+    print(f"total compression ratio:   {total_compression:.2f}%")
     return 0
 
 
